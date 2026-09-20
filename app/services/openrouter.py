@@ -52,14 +52,47 @@ _PRICING_TTL_SECONDS = 3600.0
 
 def split_model_variant(model: str) -> tuple[str, str | None]:
     """Split "vendor/model[:tier]" into (base_model, tier) where tier is
-    "flex" | "batch" | None. Batch keeps its suffix (it is part of the
-    OpenRouter model id); flex is a request-level tier and is stripped."""
+    "flex" | "batch" | None. Batch keeps its suffix for picker/catalog
+    identity; ``normalize_batch_model`` strips it at the Batch API boundary.
+    Flex is a request-level tier and is stripped."""
     stripped = model.strip()
     if stripped.endswith(FLEX_SUFFIX):
         return stripped[: -len(FLEX_SUFFIX)], "flex"
     if stripped.endswith(BATCH_SUFFIX):
         return stripped, "batch"
     return stripped, None
+
+
+def normalize_batch_model(model: str) -> str:
+    """Return the model id that OpenRouter expects inside a Batch payload.
+
+    The catalog/picker can expose a ``:batch`` variant, but the Batch API
+    examples use the underlying model id without that suffix. Keep the
+    picker-facing behavior in ``split_model_variant`` and normalize only at
+    this API boundary.
+    """
+    base_model, _ = split_model_variant(model)
+    if base_model.endswith(BATCH_SUFFIX):
+        return base_model[: -len(BATCH_SUFFIX)]
+    return base_model
+
+
+def batch_api_url(batch_id: str | None = None) -> str:
+    """Build an OpenRouter Async Batch API URL from the Chat API base URL.
+
+    ``settings.openrouter_base_url`` points at ``/api/v1`` for normal Chat
+    requests, while Async Batch lives under ``/api/beta/batches``.
+    """
+    base_url = settings.openrouter_base_url.rstrip("/")
+    if base_url.endswith("/api/v1"):
+        base_url = base_url[: -len("/v1")]
+    elif not base_url.endswith("/api"):
+        base_url = f"{base_url}/api"
+
+    url = f"{base_url}/beta/batches"
+    if batch_id is not None:
+        return f"{url}/{batch_id}"
+    return url
 
 
 def fetch_model_catalog() -> list[dict]:
@@ -370,34 +403,35 @@ def create_batch(model: str, requests: list[dict]) -> dict:
     Returns the raw OpenRouter batch object (status is usually "validating").
     """
     _require_key()
-    base_model, tier = split_model_variant(model)
+    _, tier = split_model_variant(model)
+    batch_model = normalize_batch_model(model)
 
     cached_requests: list[dict] = []
     for request in requests:
         item = dict(request)
         body = item.get("body")
-        if isinstance(body, dict):
-            new_body = dict(body)
-            messages = new_body.get("messages")
-            if isinstance(messages, list):
-                new_body["messages"] = _with_prompt_cache(
-                    messages, settings.cache_duration_seconds
-                )
-            if tier == "flex":
-                new_body["service_tier"] = "flex"
-            item["body"] = new_body
+        new_body = dict(body) if isinstance(body, dict) else {}
+        new_body["model"] = batch_model
+        messages = new_body.get("messages")
+        if isinstance(messages, list):
+            new_body["messages"] = _with_prompt_cache(
+                messages, settings.cache_duration_seconds
+            )
+        if tier == "flex":
+            new_body["service_tier"] = "flex"
+        item["body"] = new_body
         cached_requests.append(item)
 
     payload = {
         # The docs require endpoint and model serialized BEFORE requests
         "endpoint": "/v1/chat/completions",
-        "model": base_model,
+        "model": batch_model,
         "requests": cached_requests,
     }
     try:
         with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
             resp = client.post(
-                f"{settings.openrouter_base_url}/beta/batches",
+                batch_api_url(),
                 headers=_headers(),
                 json=payload,
             )
@@ -420,7 +454,7 @@ def get_batch(batch_id: str) -> dict:
         try:
             with httpx.Client(timeout=REQUEST_TIMEOUT) as client:
                 resp = client.get(
-                    f"{settings.openrouter_base_url}/beta/batches/{batch_id}",
+                    batch_api_url(batch_id),
                     headers=_headers(),
                 )
             if resp.status_code == 200:

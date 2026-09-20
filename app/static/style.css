@@ -277,6 +277,62 @@ input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 
 
 .menu-popover .btn { text-align: left; white-space: nowrap; }
 
+/* Prompt-oriented OpenRouter async Batch API */
+.async-batch-modal { max-width: 760px; }
+.async-batch-modal .modal-hint { line-height: 1.45; }
+.async-batch-modal .modal-field textarea { min-height: 0; }
+.async-batch-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.async-batch-history-header h4 { margin: 0 0 3px; }
+.async-batch-history-header .modal-hint { margin: 0; }
+.async-batch-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 34vh;
+  overflow-y: auto;
+}
+.async-batch-empty { color: var(--text-muted); font-size: 13px; padding: 8px 0; }
+.async-batch-empty.err { color: var(--error); }
+.async-batch-job {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+}
+.async-batch-job-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.async-batch-job-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.async-batch-job-meta { margin-top: 4px; color: var(--text-muted); font-size: 12px; word-break: break-word; }
+.async-batch-job-error { margin-top: 6px; color: var(--error); font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.async-batch-job-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.async-batch-status {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.async-batch-status.completed { color: var(--success); border-color: var(--success); }
+.async-batch-status.failed,
+.async-batch-status.expired,
+.async-batch-status.cancelled,
+.async-batch-status.error { color: var(--error); border-color: var(--error); }
+.async-batch-status.validating,
+.async-batch-status.in_progress,
+.async-batch-status.finalizing,
+.async-batch-status.pending { color: var(--accent-hover); border-color: var(--accent); }
+
 @media (max-width: 720px) {
   .chat-header { flex-wrap: wrap; gap: 8px; }
 }

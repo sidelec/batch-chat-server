@@ -78,6 +78,7 @@
               <button type="button" id="mode-batch-btn" class="mode-btn" title="Batch chat — all selected models answer in parallel">⚡ Batch — all models in parallel</button>
             </span>
           </span>
+          <button type="button" id="async-batch-btn" class="btn btn-ghost btn-small" title="Submit one large multi-line prompt to OpenRouter's async Batch API">🧾 Async Batch</button>
           <button type="button" id="cache-btn" class="mode-btn hidden" title="🔥 Cache keep-alive: warm the open dialog's prompt cache with near-empty pings every 45 min (window from Settings). Click to toggle.">🔥 Cache</button>
           <select id="reasoning-select" class="reasoning-select hidden" title="Reasoning effort (thinking budget) sent to the model via OpenRouter's unified reasoning parameter. Default = the model's own default.">
             <option value="">🧠 Default</option>
@@ -120,6 +121,53 @@
       </form>
     </main>
   </section>
+
+  <!-- Prompt-oriented OpenRouter async Batch API modal. The textarea becomes
+       one JSONL record; users never have to write JSONL themselves. -->
+  <div id="async-batch-modal" class="modal-overlay hidden">
+    <div class="modal async-batch-modal">
+      <div class="modal-header">
+        <h3>🧾 Async Batch</h3>
+        <button id="async-batch-close" class="btn btn-ghost btn-small">✕</button>
+      </div>
+      <p class="modal-hint">
+        Submit one large prompt to OpenRouter's async Batch API. You can close
+        the browser after submitting; the server keeps the job and tracks it.
+      </p>
+      <label class="modal-field">
+        Title
+        <input id="async-batch-title" type="text" maxlength="255" placeholder="Architecture review" />
+      </label>
+      <label class="modal-field">
+        Model
+        <input id="async-batch-model" type="text" list="async-batch-model-options" value="anthropic/claude-fable-5.1:batch" autocomplete="off" spellcheck="false" />
+        <datalist id="async-batch-model-options"></datalist>
+        <span class="settings-hint">Only models ending in <code>:batch</code> are accepted.</span>
+      </label>
+      <label class="modal-field">
+        System prompt <span class="settings-hint">(optional)</span>
+        <textarea id="async-batch-system" rows="3" placeholder="You are a careful reviewer."></textarea>
+      </label>
+      <label class="modal-field">
+        Prompt
+        <textarea id="async-batch-prompt" rows="12" placeholder="Paste the complete multi-line prompt here…" required></textarea>
+      </label>
+      <p id="async-batch-status" class="import-status"></p>
+      <div class="modal-actions">
+        <button id="async-batch-submit" class="btn btn-primary">Submit</button>
+      </div>
+
+      <hr class="modal-divider" />
+      <div class="async-batch-history-header">
+        <div>
+          <h4>Recent jobs</h4>
+          <p class="modal-hint">Pending jobs refresh automatically every 10 seconds.</p>
+        </div>
+        <button id="async-batch-refresh" class="btn btn-ghost btn-small">🔄 Refresh</button>
+      </div>
+      <div id="async-batch-jobs" class="async-batch-jobs"></div>
+    </div>
+  </div>
 
   <!-- Message metadata modal (reasoning / provider / usage) -->
   <div id="meta-modal" class="modal-overlay hidden">
@@ -416,7 +464,7 @@
     <a href="/links" style="color:#4f8cff;text-decoration:none">⬇️ Android APK &amp; project links</a>
   </p>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=4"></script>
   <script>
     // PWA service worker registration (network-first worker — see sw.js).
     if ("serviceWorker" in navigator) {

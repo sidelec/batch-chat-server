@@ -21,6 +21,11 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.jsonl_batches import JsonlParseError, parse_jsonl  # noqa: E402
+from app.services.openrouter import (  # noqa: E402
+    batch_api_url,
+    chat_completion_full,
+    normalize_batch_model,
+)
 
 # Settings are baked at the first `import app.main` — which in a full-suite run
 # happens in another test module before we set OPENROUTER_BASE_URL here. Patch
@@ -29,6 +34,7 @@ settings.openrouter_base_url = f"http://127.0.0.1:{PORT}"
 
 BATCH_RESPONSES: dict = {}
 SUBMITTED: dict = {}
+REQUEST_PATHS: list[str] = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -36,8 +42,32 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def do_POST(self):
+        REQUEST_PATHS.append(self.path)
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length))
+
+        if self.path == "/api/v1/chat/completions":
+            self._send(
+                {
+                    "id": "chat_test",
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "sync answer",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {},
+                }
+            )
+            return
+
+        if self.path != "/api/beta/batches":
+            self.send_error(404)
+            return
+
         SUBMITTED["payload"] = body
         n = len(body.get("requests", []))
         batch_id = f"batch_{n}"
@@ -59,7 +89,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send(resp)
 
     def do_GET(self):
-        batch_id = self.path.split("/")[-1]
+        REQUEST_PATHS.append(self.path)
+        prefix = "/api/beta/batches/"
+        if not self.path.startswith(prefix):
+            self.send_error(404)
+            return
+        batch_id = self.path[len(prefix):]
         entry = BATCH_RESPONSES.get(batch_id, {})
         requests = entry.get("requests", [])
         results = []
@@ -190,6 +225,24 @@ def test_bad_line_raises_with_number():
         assert "Line 2" in str(exc)
 
 
+def test_batch_helpers_use_beta_path_and_base_model():
+    previous_base_url = settings.openrouter_base_url
+    settings.openrouter_base_url = "https://openrouter.ai/api/v1"
+    try:
+        assert batch_api_url() == "https://openrouter.ai/api/beta/batches"
+        assert (
+            batch_api_url("batch_123")
+            == "https://openrouter.ai/api/beta/batches/batch_123"
+        )
+    finally:
+        settings.openrouter_base_url = previous_base_url
+
+    assert (
+        normalize_batch_model("anthropic/claude-fable-5.1:batch")
+        == "anthropic/claude-fable-5.1"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Full flow: submit → poll → conversation
 # ---------------------------------------------------------------------------
@@ -215,6 +268,16 @@ def test_batch_flow():
     assert job["external_id"] == "batch_3"
     assert job["total_items"] == 3
 
+    expected_model = "anthropic/claude-fable-5"
+    assert SUBMITTED["payload"]["model"] == expected_model
+    assert all(
+        req["body"]["model"] == expected_model
+        for req in SUBMITTED["payload"]["requests"]
+    )
+    assert "/api/beta/batches" in REQUEST_PATHS
+    assert f"/api/beta/batches/{job['external_id']}" in REQUEST_PATHS
+    assert "/api/v1/beta/batches" not in REQUEST_PATHS
+
     resp = client.get(f"/api/batches/{job_id}", headers=headers)
     assert resp.status_code == 200
     job = resp.json()
@@ -236,6 +299,20 @@ def test_batch_flow():
     assert any(c["id"] == conv_id and c["kind"] == "batch" for c in convs)
 
     assert client.delete(f"/api/batches/{job_id}", headers=headers).status_code == 204
+
+
+def test_chat_api_path_is_unchanged():
+    previous_base_url = settings.openrouter_base_url
+    settings.openrouter_base_url = f"http://127.0.0.1:{PORT}/api/v1"
+    try:
+        result = chat_completion_full(
+            "anthropic/claude-fable-5.1",
+            [{"role": "user", "content": "hello"}],
+        )
+    finally:
+        settings.openrouter_base_url = previous_base_url
+    assert result["content"] == "sync answer"
+    assert REQUEST_PATHS[-1] == "/api/v1/chat/completions"
 
 
 if __name__ == "__main__":

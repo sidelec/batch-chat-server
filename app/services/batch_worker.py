@@ -1,7 +1,7 @@
 """Background worker that polls non-terminal OpenRouter batches.
 
 Every POLL_INTERVAL seconds we look for BatchJob rows that aren't terminal and
-(1) refresh their status/results via GET /beta/batches/{id}, and (2) when a
+(1) refresh their status/results via GET /api/beta/batches/{id}, and (2) when a
 batch completes, mirror the answers into a kind="batch" conversation so the
 results show up in the normal chat UI.
 """

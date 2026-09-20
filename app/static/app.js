@@ -18,7 +18,10 @@ const state = {
     ? localStorage.getItem("bc_chat_mode")
     : "live",
   liveModel: localStorage.getItem("bc_live_model") || null,
+  defaultBatchModel: "anthropic/claude-fable-5.1:batch",
   sending: false,
+  asyncBatches: [],
+  asyncBatchRefreshTimer: null,
   // Model-picker search filter ("" = show everything)
   modelSearchQuery: "",
   // "new" | "output" = show the provider's FULL catalog sorted that way;
@@ -162,6 +165,18 @@ const els = {
   metaBody: $("#meta-body"),
   metaLogs: $("#meta-logs"),
   metaCopy: $("#meta-copy"),
+  asyncBatchBtn: $("#async-batch-btn"),
+  asyncBatchModal: $("#async-batch-modal"),
+  asyncBatchClose: $("#async-batch-close"),
+  asyncBatchTitle: $("#async-batch-title"),
+  asyncBatchModel: $("#async-batch-model"),
+  asyncBatchModelOptions: $("#async-batch-model-options"),
+  asyncBatchSystem: $("#async-batch-system"),
+  asyncBatchPrompt: $("#async-batch-prompt"),
+  asyncBatchStatus: $("#async-batch-status"),
+  asyncBatchSubmit: $("#async-batch-submit"),
+  asyncBatchRefresh: $("#async-batch-refresh"),
+  asyncBatchJobs: $("#async-batch-jobs"),
 };
 
 // ---------------------------------------------------------------
@@ -290,6 +305,7 @@ function showApp() {
   loadModels();
   loadConversations();
   checkHealth();
+  loadBatches().catch(() => {});
 }
 
 function showLogin() {
@@ -332,6 +348,11 @@ async function loadModels() {
   try {
     const data = await api("/api/chat/models");
     state.defaultModels = data.default_models || [];
+    state.defaultBatchModel = data.default_batch_model || "anthropic/claude-fable-5.1:batch";
+    if (!els.asyncBatchModel.value.trim()) {
+      els.asyncBatchModel.value = state.defaultBatchModel;
+    }
+    renderAsyncBatchModelOptions();
     state.modelPricing = data.pricing || {};
     const batchChatDefault = () => {
       // Batch chat default: Fable 5.1 (sync id — the :batch variant of the
@@ -1770,6 +1791,249 @@ els.cacheBtn.addEventListener("click", async () => {
 // ---------------------------------------------------------------
 // Send / batch chat
 // ---------------------------------------------------------------
+const ASYNC_BATCH_TERMINAL_STATUSES = new Set([
+  "completed",
+  "failed",
+  "expired",
+  "cancelled",
+  "error",
+]);
+
+function isAsyncBatchTerminal(job) {
+  return ASYNC_BATCH_TERMINAL_STATUSES.has(job.status);
+}
+
+function formatBatchDate(value) {
+  if (!value) return "";
+  const raw = String(value);
+  const date = new Date(raw.endsWith("Z") ? raw : `${raw}Z`);
+  if (Number.isNaN(date.getTime())) return raw;
+  return date.toLocaleString([], {
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function setAsyncBatchStatus(message, className = "") {
+  els.asyncBatchStatus.className = "import-status";
+  if (className) els.asyncBatchStatus.classList.add(className);
+  els.asyncBatchStatus.textContent = message;
+}
+
+function renderAsyncBatchModelOptions() {
+  if (!els.asyncBatchModelOptions) return;
+  const ids = new Set([els.asyncBatchModel.value.trim()]);
+  if (state.defaultBatchModel) ids.add(state.defaultBatchModel);
+  state.defaultModels.filter((id) => id.endsWith(":batch")).forEach((id) => ids.add(id));
+  state.modelCatalog
+    .filter((model) => model.id && model.id.endsWith(":batch"))
+    .forEach((model) => ids.add(model.id));
+
+  els.asyncBatchModelOptions.innerHTML = "";
+  [...ids].filter(Boolean).forEach((id) => {
+    const option = document.createElement("option");
+    option.value = id;
+    const catalogEntry = state.modelCatalog.find((model) => model.id === id);
+    option.label = catalogEntry?.name && catalogEntry.name !== id
+      ? `${catalogEntry.name} (${id})`
+      : id;
+    els.asyncBatchModelOptions.appendChild(option);
+  });
+}
+
+async function openAsyncBatch() {
+  setAsyncBatchStatus("");
+  els.asyncBatchModal.classList.remove("hidden");
+  renderAsyncBatchModelOptions();
+  els.asyncBatchPrompt.focus();
+  loadModelCatalog()
+    .then(() => {
+      renderAsyncBatchModelOptions();
+    })
+    .catch(() => {});
+  await loadBatches();
+}
+
+function closeAsyncBatch() {
+  els.asyncBatchModal.classList.add("hidden");
+}
+
+async function loadBatches() {
+  try {
+    state.asyncBatches = await api("/api/batches");
+  } catch (err) {
+    state.asyncBatches = [];
+    if (!els.asyncBatchModal.classList.contains("hidden")) {
+      renderAsyncBatchJobs(`Could not load jobs: ${err.message}`);
+    }
+    return;
+  }
+
+  renderAsyncBatchJobs();
+  const active = state.asyncBatches.some((job) => !isAsyncBatchTerminal(job));
+  if (active && !state.asyncBatchRefreshTimer) {
+    state.asyncBatchRefreshTimer = setInterval(() => {
+      loadBatches().catch(() => {});
+      loadConversations().catch(() => {});
+    }, 10000);
+  } else if (!active && state.asyncBatchRefreshTimer) {
+    clearInterval(state.asyncBatchRefreshTimer);
+    state.asyncBatchRefreshTimer = null;
+  }
+}
+
+function renderAsyncBatchJobs(errorMessage = "") {
+  els.asyncBatchJobs.innerHTML = "";
+  if (errorMessage) {
+    const error = document.createElement("div");
+    error.className = "async-batch-empty err";
+    error.textContent = errorMessage;
+    els.asyncBatchJobs.appendChild(error);
+    return;
+  }
+  if (!state.asyncBatches.length) {
+    const empty = document.createElement("div");
+    empty.className = "async-batch-empty";
+    empty.textContent = "No async batch jobs yet.";
+    els.asyncBatchJobs.appendChild(empty);
+    return;
+  }
+
+  state.asyncBatches.slice(0, 20).forEach((job) => {
+    const row = document.createElement("article");
+    row.className = `async-batch-job ${isAsyncBatchTerminal(job) ? "terminal" : "active"}`;
+
+    const top = document.createElement("div");
+    top.className = "async-batch-job-top";
+    const title = document.createElement("strong");
+    title.className = "async-batch-job-title";
+    title.textContent = job.title || `Batch #${job.id}`;
+    const status = document.createElement("span");
+    status.className = `async-batch-status ${job.status}`;
+    status.textContent = job.status;
+    top.append(title, status);
+    row.appendChild(top);
+
+    const meta = document.createElement("div");
+    meta.className = "async-batch-job-meta";
+    meta.textContent = [
+      job.model,
+      formatBatchDate(job.created_at) ? `created ${formatBatchDate(job.created_at)}` : "",
+      `${job.completed_items || 0}/${job.total_items || 0} completed`,
+    ].filter(Boolean).join(" · ");
+    row.appendChild(meta);
+
+    if (job.error) {
+      const error = document.createElement("div");
+      error.className = "async-batch-job-error";
+      error.textContent = job.error;
+      row.appendChild(error);
+    }
+
+    const actions = document.createElement("div");
+    actions.className = "async-batch-job-actions";
+    if (job.conversation_id) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "btn btn-primary btn-small";
+      open.textContent = "Open result";
+      open.addEventListener("click", async () => {
+        try {
+          await openConversation(job.conversation_id);
+          closeAsyncBatch();
+        } catch (err) {
+          setAsyncBatchStatus(`Could not open result: ${err.message}`, "err");
+        }
+      });
+      actions.appendChild(open);
+    }
+    if (isAsyncBatchTerminal(job)) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn-ghost btn-small";
+      remove.textContent = "Delete";
+      remove.addEventListener("click", async () => {
+        if (!confirm(`Delete batch job “${job.title || job.id}” from the history?`)) return;
+        remove.disabled = true;
+        try {
+          await api(`/api/batches/${job.id}`, { method: "DELETE" });
+          await loadBatches();
+        } catch (err) {
+          setAsyncBatchStatus(`Delete failed: ${err.message}`, "err");
+          remove.disabled = false;
+        }
+      });
+      actions.appendChild(remove);
+    }
+    if (actions.childElementCount) row.appendChild(actions);
+    els.asyncBatchJobs.appendChild(row);
+  });
+}
+
+els.asyncBatchBtn.addEventListener("click", () => {
+  openAsyncBatch().catch((err) => setAsyncBatchStatus(`Could not load jobs: ${err.message}`, "err"));
+});
+els.asyncBatchClose.addEventListener("click", closeAsyncBatch);
+els.asyncBatchModal.addEventListener("click", (e) => {
+  if (e.target === els.asyncBatchModal) closeAsyncBatch();
+});
+els.asyncBatchRefresh.addEventListener("click", async () => {
+  els.asyncBatchRefresh.disabled = true;
+  try {
+    await loadBatches();
+  } finally {
+    els.asyncBatchRefresh.disabled = false;
+  }
+});
+
+els.asyncBatchSubmit.addEventListener("click", async () => {
+  const promptText = els.asyncBatchPrompt.value;
+  const model = els.asyncBatchModel.value.trim();
+  const title = els.asyncBatchTitle.value.trim() || "Async Batch";
+  const system = els.asyncBatchSystem.value.trim();
+  if (!promptText.trim()) {
+    setAsyncBatchStatus("Prompt is required.", "err");
+    els.asyncBatchPrompt.focus();
+    return;
+  }
+  if (!model || !model.endsWith(":batch")) {
+    setAsyncBatchStatus("Choose a model whose id ends with :batch.", "err");
+    els.asyncBatchModel.focus();
+    return;
+  }
+
+  const body = {
+    model,
+    // JSON.stringify preserves every newline in the one textarea as one
+    // JSONL record; the backend then parses it into one user message.
+    jsonl: JSON.stringify({ custom_id: "req-1", prompt: promptText }),
+    title,
+  };
+  if (system) body.system = system;
+
+  els.asyncBatchSubmit.disabled = true;
+  setAsyncBatchStatus("Submitting…");
+  try {
+    const job = await api("/api/batches", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    setAsyncBatchStatus(
+      `Batch #${job.id} submitted · ${job.status}. It will keep running after you close the browser.`,
+      "ok",
+    );
+    els.asyncBatchPrompt.value = "";
+    els.asyncBatchSystem.value = "";
+    await loadBatches();
+  } catch (err) {
+    setAsyncBatchStatus(`Submit failed: ${err.message}`, "err");
+  } finally {
+    els.asyncBatchSubmit.disabled = false;
+  }
+});
+
 els.chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (state.sending) return;
